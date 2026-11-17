@@ -13,11 +13,13 @@ def cargar_modelos():
     escalador = joblib.load(os.path.join(carpeta, "modelos", "escalador.pkl"))
     columnas = joblib.load(os.path.join(carpeta, "modelos", "columnas.pkl"))
     orden_grado = joblib.load(os.path.join(carpeta, "modelos", "orden_grado.pkl"))
+    tasa_real = joblib.load(os.path.join(carpeta, "modelos", "tasa_real.pkl"))
+    umbral = joblib.load(os.path.join(carpeta, "modelos", "umbral.pkl"))
     archivos = joblib.load(os.path.join(carpeta, "modelos", "archivos_modelos.pkl"))
     modelos = {}
     for nombre in archivos:
         modelos[nombre] = joblib.load(os.path.join(carpeta, "modelos", archivos[nombre]))
-    return escalador, columnas, orden_grado, modelos
+    return escalador, columnas, orden_grado, tasa_real, umbral, modelos
 
 
 @st.cache_data
@@ -30,7 +32,7 @@ def cargar_datos():
     return df
 
 
-escalador, columnas, orden_grado, modelos = cargar_modelos()
+escalador, columnas, orden_grado, tasa_real, umbral, modelos = cargar_modelos()
 df = cargar_datos()
 
 # ---------------- Barra lateral ----------------
@@ -51,7 +53,7 @@ tasa = st.sidebar.slider("Tasa de interés anual en %", 5.0, 30.0, 11.0, step=0.
 st.sidebar.header("Modelo")
 opciones = ["Boosting", "Bagging", "Árbol de Decisión", "Votación", "SVM", "KNN", "Regresión Logística", "Naive Bayes"]
 nombre_modelo = st.sidebar.selectbox("Seleccionar modelo", opciones)
-st.sidebar.caption("Boosting es el modelo con mejor desempeño en el notebook.")
+st.sidebar.caption("Boosting es el modelo final del notebook. Usa un umbral de " + str(umbral) + " para detectar al menos 8 de cada 10 clientes que incumplen.")
 
 predecir = st.sidebar.button("Predecir")
 
@@ -94,7 +96,12 @@ with tab1:
         entrada = escalador.transform(entrada)
 
         modelo = modelos[nombre_modelo]
-        prediccion = modelo.predict(entrada)[0]
+        if nombre_modelo == "Boosting":
+            limite = umbral
+            prediccion = int(modelo.predict_proba(entrada)[0][1] >= umbral)
+        else:
+            limite = 0.5
+            prediccion = modelo.predict(entrada)[0]
 
         st.subheader("Resultado")
         st.write("Modelo usado:", nombre_modelo)
@@ -106,8 +113,19 @@ with tab1:
 
         if hasattr(modelo, "predict_proba"):
             probabilidad = modelo.predict_proba(entrada)[0][1]
-            st.metric("Probabilidad de incumplir", str(round(probabilidad * 100, 1)) + " %")
-            st.progress(float(probabilidad))
+            if nombre_modelo == "KNN":
+                st.metric("Probabilidad de incumplir", str(round(probabilidad * 100, 1)) + " %")
+                st.progress(float(probabilidad))
+            else:
+                ajustada = (probabilidad * tasa_real) / (probabilidad * tasa_real + (1 - probabilidad) * (1 - tasa_real))
+                limite_ajustado = (limite * tasa_real) / (limite * tasa_real + (1 - limite) * (1 - tasa_real))
+                st.metric("Probabilidad real de incumplir", str(round(ajustada * 100, 1)) + " %")
+                st.progress(float(ajustada))
+                st.caption("El modelo se entrenó dando el mismo peso a los clientes que pagan y a los que incumplen, "
+                           "por lo que su probabilidad directa fue de " + str(round(probabilidad * 100, 1)) + " %. "
+                           "La probabilidad real se ajusta con la tasa de incumplimiento de los datos, que es de "
+                           + str(round(tasa_real * 100, 1)) + " %. Con este modelo se marca como riesgoso a quien pase de "
+                           + str(round(limite_ajustado * 100, 1)) + " % de probabilidad real.")
         else:
             st.info("Este modelo no calcula probabilidades, solo la clase.")
     else:
